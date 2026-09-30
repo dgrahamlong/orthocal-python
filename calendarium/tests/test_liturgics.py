@@ -1888,3 +1888,88 @@ class TestDayOverrides(TestCase):
                     changed or anchors,
                     'override changes no field and anchors no commemoration; '
                     'it has no reason to exist')
+
+
+class TestHolyWeekFeastReadings(TestCase):
+    """A saint whose fixed date falls in Holy Week does not displace the day.
+
+    From Holy Monday through Holy Saturday the day's own readings are the
+    abbreviated ones, and a saint's Matins Gospel is not listed as the day's
+    Matins Gospel. The saint's readings are still listed. The Annunciation is
+    the exception: its Liturgy is served even on Holy Friday and Saturday.
+    """
+
+    fixtures = ['calendarium.json', 'commemorations.json']
+
+    Gregorian, Julian = datetools.Calendar.Gregorian, datetools.Calendar.Julian
+
+    @staticmethod
+    async def _day(y, m, d, calendar, tradition):
+        day = liturgics.Day(y, m, d, calendar=calendar, tradition=tradition)
+        await day.ainitialize()
+        await day.aget_readings()
+        await day.aget_abbreviated_readings()
+        return day
+
+    @staticmethod
+    def _abbreviated(day):
+        return [(r.source, r.pericope.display) for r in day.abbreviated_readings]
+
+    async def test_holy_week_feast_matches_an_ordinary_year(self):
+        # (feast year date, a year in which the same Holy Week day has no
+        # fixed-date proper, calendar, tradition, the saint's Liturgy Epistle)
+        cases = [
+            ((2027, 4, 30), (2026, 4, 10), self.Gregorian, Tradition.Slavic, 'Acts 12.1-11'),     # James, Holy Friday
+            ((2027, 4, 30), (2026, 4, 10), self.Gregorian, Tradition.Greek, 'Acts 12.1-11'),      # James, Holy Friday
+            ((2024, 5, 3), (2025, 4, 18), self.Gregorian, Tradition.Slavic, 'Hebrews 13.7-16'),   # Theodosius, Holy Friday
+        ]
+
+        for feast, ordinary, calendar, tradition, epistle in cases:
+            with self.subTest(feast=feast, tradition=tradition):
+                day = await self._day(*feast, calendar, tradition)
+                usual = await self._day(*ordinary, calendar, tradition)
+                self.assertEqual(day.pdist, usual.pdist)
+                self.assertEqual(self._abbreviated(day), self._abbreviated(usual))
+                self.assertEqual(day.abbreviated_reading_indices, usual.abbreviated_reading_indices)
+                # Demoted, not dropped
+                self.assertIn(epistle, [r.pericope.display for r in day.readings])
+                self.assertNotIn(epistle, [r.pericope.display for r in day.abbreviated_readings])
+
+    async def test_saint_does_not_supply_the_matins_gospel(self):
+        # St Tikhon on Holy Tuesday
+        day = await self._day(2026, 4, 7, self.Gregorian, Tradition.Slavic)
+        self.assertEqual(day.pdist, -5)
+        self.assertNotIn('Matins Gospel', [r.source for r in day.readings])
+        matins = [r.pericope.display for r in day.readings if r.source == 'Matins']
+        self.assertIn('John 10.1-9', matins)
+
+        # St James on Holy Friday
+        day = await self._day(2027, 4, 30, self.Gregorian, Tradition.Slavic)
+        self.assertNotIn('Matins Gospel', [r.source for r in day.readings])
+        self.assertIn('John 21.15-25', [r.pericope.display for r in day.readings])
+
+    async def test_holy_saturday_keeps_its_own_matins_gospel(self):
+        day = await self._day(2029, 4, 7, self.Gregorian, Tradition.Slavic)
+        self.assertEqual(day.pdist, -1)
+        matins_gospels = [r.pericope.display for r in day.readings if r.source == 'Matins Gospel']
+        self.assertEqual(matins_gospels, ['Matthew 27.62-66'])
+
+    async def test_annunciation_in_holy_week_is_unchanged(self):
+        # Old calendar: March 25 is April 7 civil. Holy Tuesday 2026, Holy
+        # Saturday 2029, Holy Friday 2034.
+        for year, pdist in [(2026, -5), (2029, -1), (2034, -2)]:
+            for tradition in (Tradition.Slavic, Tradition.Greek):
+                with self.subTest(year=year, tradition=tradition):
+                    day = await self._day(year, 4, 7, self.Julian, tradition)
+                    self.assertEqual((day.month, day.day, day.pdist), (3, 25, pdist))
+                    self.assertFalse(day.holy_week_displaces_propers)
+                    self.assertIn('Luke 1.24-38', [r.pericope.display for r in day.abbreviated_readings])
+                    self.assertIn(('Matins Gospel', 'Luke 1.39-49, 56'),
+                                  [(r.source, r.pericope.display) for r in day.readings])
+
+    async def test_outside_holy_week_the_saint_still_leads(self):
+        # St James on a weekday of the Pentecostarion
+        day = await self._day(2026, 4, 30, self.Gregorian, Tradition.Slavic)
+        self.assertFalse(day.holy_week_displaces_propers)
+        self.assertIn('Acts 12.1-11', [r.pericope.display for r in day.abbreviated_readings])
+        self.assertIn('Matins Gospel', [r.source for r in day.readings])

@@ -516,6 +516,23 @@ class Day:
         return self.pdist in (-36, -29, -22) and self.month == 3 and self.day in (9, 24, 25, 26)
 
     @cached_property
+    def holy_week_displaces_propers(self):
+        """True if this is Holy Week and a fixed-date proper must give way.
+
+        From Great and Holy Monday through Great and Holy Saturday the day's
+        own services are the ones served, so a saint whose fixed date falls in
+        Holy Week supplies neither the abbreviated Epistle and Gospel nor the
+        Matins Gospel. The saint's readings are still listed by get_readings.
+
+        The Annunciation is the exception: its Liturgy is served even on Holy
+        Friday and Holy Saturday, so its readings keep their usual place.
+        """
+        if not -7 < self.pdist < 0:
+            return False
+
+        return not (self.month == 3 and self.day == 25)
+
+    @cached_property
     def has_matins_gospel(self):
         """True if there could be a non-Eothinon Gospel reading for Matins, otherwise False."""
 
@@ -666,6 +683,12 @@ class Day:
             if fetch_content:
                 await reading.pericope.aget_passage(language=self.language, translation=self.translation)
 
+            if reading.source == 'Matins Gospel' and reading.month and self.holy_week_displaces_propers:
+                # A saint's Matins Gospel is not read at Holy Week Matins. List
+                # it as one of the saint's Matins readings rather than as the
+                # day's Matins Gospel. The Reading is not saved.
+                reading.source = 'Matins'
+
             if -42 < self.pdist < -7 and self.feast_level < 7 and reading.source == 'Matins Gospel':
                 # Place Lenten Matins Gospel at the top
                 self.readings.insert(0, reading)
@@ -764,8 +787,11 @@ class Day:
                 query |= Q(pdist=self.epistle_pdist, source='Epistle')
 
         # Pull in just Epistles and Gospels from the Festal cycle, but not
-        # during clean week or Holy week.
-        if self.feast_level >= 2 and self.fast_exception != 10:
+        # during clean week or Holy week. fast_exception 10 catches clean week
+        # and the start of Holy Week but not Holy Thursday, Friday or
+        # Saturday, so Holy Week is also checked directly.
+        if (self.feast_level >= 2 and self.fast_exception != 10
+                and not self.holy_week_displaces_propers):
             subquery = Q(month=self.month, day=self.day, source__in=['Epistle', 'Gospel'])
 
             if self.month == 3 and self.day == 26 and self.weekday in [Weekday.Monday, Weekday.Tuesday, Weekday.Thursday]:
